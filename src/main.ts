@@ -1,7 +1,8 @@
 import "./style.css";
 import type { Pt } from "./geometry";
-import { packOptimal } from "./packer";
-import type { PackResult, Stagger } from "./packer";
+import type { Stagger } from "./packer";
+import { optimalWithReuse } from "./offcut";
+import type { ReuseResult } from "./offcut";
 import { PRESETS, formatArea } from "./units";
 import type { System } from "./units";
 
@@ -23,7 +24,7 @@ interface State {
   calib: CalibState;
   calibPts: Pt[];
   hoverPt: Pt | null;
-  result: PackResult | null;
+  result: ReuseResult | null;
 }
 
 const state: State = {
@@ -247,22 +248,31 @@ function calculate() {
   };
   const stagger = staggerSel.value as Stagger;
   const gap = parseFloat(gapInput.value) || 0;
-  const result = packOptimal(region, sheet, stagger, gap);
+  const result = optimalWithReuse(region, sheet, stagger, gap);
   state.result = result;
   showResult(result);
   draw();
 }
 
-function showResult(r: PackResult) {
+function showResult(r: ReuseResult) {
   $("#results").hidden = false;
-  $("#boards-used").textContent = String(r.boardsUsed);
+  $("#boards-used").textContent = String(r.freshBoards);
   $("#whole-boards").textContent = String(r.wholeBoards);
   $("#cut-boards").textContent = String(r.cutBoards);
-  $("#area-covered").textContent = formatArea(r.regionArea, state.system);
+  $("#area-covered").textContent = formatArea(r.baseline.regionArea, state.system);
   $("#waste-pct").textContent = `${(r.wastePct * 100).toFixed(1)}%`;
-  $("#orient-note").textContent = r.options.rotateSheet
-    ? "Best layout: sheets rotated (long edge vertical)."
-    : "Best layout: sheets in default orientation (long edge horizontal).";
+
+  const saved = r.boardsSaved;
+  const orient = r.baseline.options.rotateSheet
+    ? "sheets rotated (long edge vertical)"
+    : "sheets in default orientation (long edge horizontal)";
+  const savedNote =
+    saved > 0
+      ? ` Offcut reuse saved ${saved} board${saved > 1 ? "s" : ""} (${
+          r.reusedPieces
+        } piece${r.reusedPieces > 1 ? "s" : ""} cut from leftovers).`
+      : " No offcuts were large enough to reuse here.";
+  $("#orient-note").textContent = `Best layout: ${orient}.${savedNote}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,23 +386,34 @@ function drawCalibration() {
   }
 }
 
-function drawSheets(r: PackResult) {
+function drawSheets(r: ReuseResult) {
   const scale = state.mode === "draw" ? gridPxPerUnit() : state.pxPerUnit;
+
+  // Which sheets were supplied entirely from reused offcuts (no fresh board)?
+  const reusedSheets = new Set<number>();
+  for (const a of r.assignments) {
+    if (a.servedByOffcut) reusedSheets.add(a.sheetIndex);
+  }
 
   // Pass 1: fill the clipped fragments (the area actually covered), clipped to
   // the region so nothing spills outside the outline. No per-fragment stroke,
-  // so triangulation diagonals stay invisible.
-  for (const s of r.placed) {
-    ctx.fillStyle = s.isCut ? getVar("--cut-fill") : getVar("--whole-fill");
+  // so triangulation diagonals stay invisible. Three fills: whole board, cut
+  // board (fresh), and pieces cut from a reused offcut.
+  r.baseline.placed.forEach((s, i) => {
+    ctx.fillStyle = reusedSheets.has(i)
+      ? getVar("--reuse-fill")
+      : s.isCut
+      ? getVar("--cut-fill")
+      : getVar("--whole-fill");
     for (const frag of s.clip) {
       ctx.beginPath();
       ctx.moveTo(frag[0].x * scale, frag[0].y * scale);
-      for (let i = 1; i < frag.length; i++)
-        ctx.lineTo(frag[i].x * scale, frag[i].y * scale);
+      for (let k = 1; k < frag.length; k++)
+        ctx.lineTo(frag[k].x * scale, frag[k].y * scale);
       ctx.closePath();
       ctx.fill();
     }
-  }
+  });
 
   // Pass 2: stroke each sheet's rectangle outline, clipped to the region path
   // so the brick/running-bond seams are visible but nothing draws outside.
@@ -400,7 +421,7 @@ function drawSheets(r: PackResult) {
   clipToRegionPath();
   ctx.strokeStyle = getVar("--sheet-line");
   ctx.lineWidth = 1.25;
-  for (const s of r.placed) {
+  for (const s of r.baseline.placed) {
     const { x, y, w, h } = s.rect;
     ctx.strokeRect(x * scale, y * scale, w * scale, h * scale);
   }

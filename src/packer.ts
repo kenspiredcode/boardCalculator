@@ -36,6 +36,10 @@ export interface PlacedSheet {
   wholeInside: boolean; // true if the full sheet lies inside the region
   row: number;
   col: number;
+  // Axis-aligned extent of the covered fragments, in region units. Used by the
+  // offcut-reuse pass to know how much of the sheet's length/height is actually
+  // consumed and how big a leftover the cut produced.
+  usedBox: { minX: number; minY: number; maxX: number; maxY: number } | null;
 }
 
 export interface PackResult {
@@ -105,6 +109,7 @@ export function pack(region: Pt[], opts: PackOptions): PackResult {
         wholeInside,
         row: r,
         col: c,
+        usedBox: fragmentsBox(fragments),
       });
       coveredArea += area;
       if (wholeInside) wholeBoards++;
@@ -129,6 +134,26 @@ export function pack(region: Pt[], opts: PackOptions): PackResult {
     wastePct,
     options: opts,
   };
+}
+
+/** Axis-aligned bounding box of a set of clipped fragments, or null if empty. */
+function fragmentsBox(
+  frags: Pt[][]
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const frag of frags) {
+    for (const p of frag) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+  }
+  if (minX === Infinity) return null;
+  return { minX, minY, maxX, maxY };
 }
 
 /** Clip a rect against every triangle of the region; union areas of fragments. */

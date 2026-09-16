@@ -18,7 +18,14 @@ whole vs. cut boards and total waste.
   sheet size and units are editable.
 - **Running-bond packing engine** — lays staggered rows of sheets (½, ⅓, or no
   offset), tries both sheet orientations, and keeps whichever uses fewer boards.
-- **Honest counts** — whole sheets, cut sheets, total area, and waste percentage.
+- **Offcut reuse** — after the baseline layout, leftovers from cut boards are
+  decomposed into real rectangles and reused to supply later cut pieces before
+  buying a fresh board. An offcut can serve any row it's tall enough for (trimmed
+  down; no rotation), with a ±15% seam flex to make near-fits land and a 20%
+  minimum-piece rule to avoid slivers. Reused pieces are shown in a distinct
+  colour.
+- **Honest counts** — boards to buy (after reuse), whole sheets, cut sheets,
+  total area, and waste percentage.
 - **Handles L-shapes and other concave rectilinear rooms** via polygon
   triangulation and per-sheet clipping, so the covered area is exact.
 
@@ -60,6 +67,11 @@ The region is a rectilinear polygon in real-world units. The packer:
 2. Lays rows of sheet-height across the bounding box, offsetting each row's
    start by the chosen stagger for the brick pattern.
 3. Clips every candidate sheet against the region. Sheets fully outside are
-   dropped; partial sheets count as one board used and are marked as cut.
-4. Reports board counts and waste, choosing the orientation that needs fewer
-   boards (ties broken by lower waste).
+   dropped; partial sheets are marked as cut.
+4. Runs the offcut-reuse pass: each cut board's covered area and its leftover are
+   decomposed into exact rectangles (`rectdecomp.ts`). A cut board is saved when
+   every rectangle it needs can be supplied from the running inventory of
+   leftovers (tall-enough offcut, ±15% seam flex, ≥20% min piece); otherwise one
+   board is bought and its leftover rectangles are banked for later.
+5. Reports boards-to-buy and waste, choosing the orientation that needs fewer
+   fresh boards after reuse (ties broken by lower waste).
