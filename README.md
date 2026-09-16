@@ -24,6 +24,14 @@ whole vs. cut boards and total waste.
   down; no rotation), with a ±15% seam flex to make near-fits land and a 20%
   minimum-piece rule to avoid slivers. Reused pieces are shown in a distinct
   colour.
+- **Seam-position search** — sweeps the grid origin (horizontal and vertical
+  phase) across both orientations, scoring each candidate by fresh boards after
+  reuse, then a joint-spacing penalty (keeping running-bond joints well apart),
+  then waste. On irregular rooms this compounds with reuse — e.g. an L-shaped
+  room drops from 5 boards to 4.
+- **Rectilinear shapes** — any outline of horizontal/vertical edges works
+  (rectangle, L, T, U, staircase). Drawing snaps edges to axis-aligned; diagonal
+  and curved walls are not supported.
 - **Honest counts** — boards to buy (after reuse), whole sheets, cut sheets,
   total area, and waste percentage.
 - **Handles L-shapes and other concave rectilinear rooms** via polygon

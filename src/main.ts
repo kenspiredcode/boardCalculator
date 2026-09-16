@@ -162,7 +162,17 @@ canvas.addEventListener("click", (e) => {
     draw();
     return;
   }
-  if (state.closed) return;
+  // Clicking on the canvas after a shape is finished starts a fresh one, so you
+  // don't have to hunt for "Clear shape" to redraw.
+  if (state.closed) {
+    state.points = [];
+    state.closed = false;
+    state.result = null;
+    $("#results").hidden = true;
+    state.points.push(p);
+    draw();
+    return;
+  }
   // Close if clicking near the first point.
   if (state.points.length >= 3) {
     const first = state.points[0];

@@ -68,15 +68,90 @@ export function optimalWithReuse(
   stagger: Stagger,
   gap: number
 ): ReuseResult {
-  const results: ReuseResult[] = [];
+  // Seam-position search: sweep the grid origin (X within one sheet length, Y
+  // within one sheet height) and both orientations. Score each candidate by
+  // fresh boards after reuse first, then a joint-spacing penalty (so seams don't
+  // bunch), then waste. Keep the best.
+  const offsets = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 1 / 3, 0.4, 0.5];
+  let best: { result: ReuseResult; score: Score } | null = null;
+
   for (const rotateSheet of [false, true]) {
-    results.push(reuseOffcuts(pack(region, { sheet, rotateSheet, stagger, gap })));
+    for (const offsetX of offsets) {
+      // Y offset rarely helps (it usually just adds a partial row), but a small
+      // sweep catches rooms whose height isn't a clean multiple. Keep it short.
+      for (const offsetY of [0, 0.5]) {
+        const base = pack(region, {
+          sheet,
+          rotateSheet,
+          stagger,
+          gap,
+          offsetX,
+          offsetY,
+        });
+        const result = reuseOffcuts(base);
+        const score: Score = {
+          fresh: result.freshBoards,
+          spacingPenalty: seamSpacingPenalty(base),
+          waste: result.wastePct,
+        };
+        if (!best || compareScore(score, best.score) < 0) {
+          best = { result, score };
+        }
+      }
+    }
   }
-  results.sort((a, b) => {
-    if (a.freshBoards !== b.freshBoards) return a.freshBoards - b.freshBoards;
-    return a.wastePct - b.wastePct;
-  });
-  return results[0];
+  return best!.result;
+}
+
+interface Score {
+  fresh: number;
+  spacingPenalty: number; // higher = seams bunch more (worse)
+  waste: number;
+}
+
+function compareScore(a: Score, b: Score): number {
+  if (a.fresh !== b.fresh) return a.fresh - b.fresh; // fewest boards wins
+  if (Math.abs(a.spacingPenalty - b.spacingPenalty) > 1e-6)
+    return a.spacingPenalty - b.spacingPenalty; // then best-spaced seams
+  return a.waste - b.waste; // then least waste
+}
+
+/**
+ * Penalty for vertical joints in adjacent rows landing too close together. For
+ * a running bond you want joints offset by a good fraction of a sheet; seams
+ * within MIN_JOINT_FRAC of a sheet length of the row below are penalized,
+ * proportional to how close they are. Returned value is unitless (sum of
+ * shortfalls / sheet length), so 0 means every adjacent joint is well spaced.
+ */
+const MIN_JOINT_FRAC = 0.25; // joints should be >= 25% of a sheet apart
+function seamSpacingPenalty(base: PackResult): number {
+  const sw = base.options.rotateSheet ? base.options.sheet.h : base.options.sheet.w;
+  const minGap = sw * MIN_JOINT_FRAC;
+
+  // Collect interior vertical seams per row: the right edge of each placed
+  // sheet that lies inside the region (i.e. a real joint, not the outer border).
+  const seamsByRow = new Map<number, number[]>();
+  for (const s of base.placed) {
+    if (!s.usedBox) continue;
+    const right = s.usedBox.maxX;
+    const list = seamsByRow.get(s.row) ?? [];
+    list.push(right);
+    seamsByRow.set(s.row, list);
+  }
+
+  let penalty = 0;
+  const rows = [...seamsByRow.keys()].sort((a, b) => a - b);
+  for (let i = 1; i < rows.length; i++) {
+    const cur = seamsByRow.get(rows[i]) ?? [];
+    const prev = seamsByRow.get(rows[i - 1]) ?? [];
+    for (const c of cur) {
+      // Distance to the nearest seam in the row below.
+      let nearest = Infinity;
+      for (const p of prev) nearest = Math.min(nearest, Math.abs(c - p));
+      if (nearest < minGap) penalty += (minGap - nearest) / sw;
+    }
+  }
+  return penalty;
 }
 
 function usedRectsOf(s: PlacedSheet): DRect[] {

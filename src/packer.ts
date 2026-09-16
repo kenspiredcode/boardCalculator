@@ -26,6 +26,14 @@ export interface PackOptions {
   stagger: Stagger;
   /** Gap between sheets (expansion gap), in the same units. */
   gap: number;
+  /**
+   * Fraction of one sheet-length to shift the whole grid's origin along X, and
+   * of one sheet-height along Y. Both in [0,1); the seam-position search sweeps
+   * these to find cut positions that waste fewer boards. Default 0 = grid starts
+   * flush at the region's bounding-box corner (the original behavior).
+   */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 export interface PlacedSheet {
@@ -77,20 +85,27 @@ export function pack(region: Pt[], opts: PackOptions): PackResult {
   let wholeBoards = 0;
   let cutBoards = 0;
 
-  const rows = Math.ceil((box.maxY - box.minY) / stepY) + 1;
+  // Grid-origin offsets from the seam-position search. offsetY shifts the first
+  // row up so its top seam lands elsewhere; offsetX shifts each row's columns.
+  const offX = (opts.offsetX ?? 0) * stepX;
+  const offY = (opts.offsetY ?? 0) * stepY;
+  const originY = box.minY - offY;
+
+  const rows = Math.ceil((box.maxY - originY) / stepY) + 2;
 
   for (let r = 0; r < rows; r++) {
-    const y = box.minY + r * stepY;
+    const y = originY + r * stepY;
     if (y > box.maxY + EPS) break;
+    if (y + sh < box.minY - EPS) continue; // row entirely above the region
 
     // Running-bond: shift alternating (or every) row's start left so joints
     // stagger. We start one step early so a shifted row still covers the left.
     const rowShift = (r * staggerOffset) % stepX;
-    let startX = box.minX - rowShift;
+    let startX = box.minX - offX - rowShift;
     // Back up until we're left of the region, then advance in whole steps.
     while (startX > box.minX - EPS) startX -= stepX;
 
-    const cols = Math.ceil((width + rowShift + stepX) / stepX) + 1;
+    const cols = Math.ceil((width + offX + rowShift + stepX) / stepX) + 2;
     for (let c = 0; c < cols; c++) {
       const x = startX + c * stepX;
       if (x > box.maxX + EPS) break;
