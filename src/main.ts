@@ -5,6 +5,12 @@ import { optimalWithReuse } from "./offcut";
 import type { ReuseResult } from "./offcut";
 import { PRESETS, formatArea } from "./units";
 import type { System } from "./units";
+import {
+  resolvePolygon,
+  edgeRealLength,
+  edgeMidpoint,
+  edgesOf,
+} from "./dimensions";
 
 // ---------------------------------------------------------------------------
 // State
@@ -25,6 +31,9 @@ interface State {
   calibPts: Pt[];
   hoverPt: Pt | null;
   result: ReuseResult | null;
+  // User-fixed real-world lengths per edge (edge i = points[i]->points[i+1]).
+  // Absent entries float and scale proportionally when other edges are fixed.
+  fixedLen: Map<number, number>;
 }
 
 const state: State = {
@@ -38,6 +47,7 @@ const state: State = {
   calibPts: [],
   hoverPt: null,
   result: null,
+  fixedLen: new Map(),
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +150,7 @@ $("#clear-btn").addEventListener("click", () => {
   state.points = [];
   state.closed = false;
   state.result = null;
+  state.fixedLen.clear();
   $("#results").hidden = true;
   draw();
 });
@@ -148,6 +159,9 @@ $("#calc-btn").addEventListener("click", calculate);
 // Canvas interaction
 canvas.addEventListener("mousemove", (e) => {
   state.hoverPt = evtPt(e);
+  // Pointer cursor when hovering a side of a finished shape (it's editable).
+  canvas.style.cursor =
+    state.closed && edgeNear(state.hoverPt) !== -1 ? "pointer" : "crosshair";
   draw();
 });
 canvas.addEventListener("mouseleave", () => {
@@ -162,12 +176,20 @@ canvas.addEventListener("click", (e) => {
     draw();
     return;
   }
-  // Clicking on the canvas after a shape is finished starts a fresh one, so you
-  // don't have to hunt for "Clear shape" to redraw.
+  // When the shape is closed: clicking ON a side edits that side's real length.
+  // Clicking clearly in open space offers to start a fresh shape (confirmed, so
+  // a near-miss on a side never silently discards the drawing).
   if (state.closed) {
+    const edgeIdx = edgeNear(p);
+    if (edgeIdx !== -1) {
+      editEdgeLength(edgeIdx);
+      return;
+    }
+    if (!confirm("Start a new shape? This clears the current one.")) return;
     state.points = [];
     state.closed = false;
     state.result = null;
+    state.fixedLen.clear();
     $("#results").hidden = true;
     state.points.push(p);
     draw();
@@ -240,6 +262,72 @@ const GRID_PX = 40;
 function gridPxPerUnit(): number {
   const cell = parseFloat(scaleInput.value) || 1;
   return GRID_PX / cell;
+}
+
+// Pixels-per-unit currently in effect (draw grid vs. image calibration).
+function currentScale(): number {
+  return state.mode === "draw" ? gridPxPerUnit() : state.pxPerUnit;
+}
+
+// ---------------------------------------------------------------------------
+// Edge dimension editing
+// ---------------------------------------------------------------------------
+
+const EDGE_HIT_PX = 14;
+
+// Index of the polygon edge within EDGE_HIT_PX of point p, or -1.
+function edgeNear(p: Pt): number {
+  const pts = state.points;
+  let bestI = -1;
+  let bestD = EDGE_HIT_PX;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const d = distToSegment(p, a, b);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  }
+  return bestI;
+}
+
+function distToSegment(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-9) return dist(p, a);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+// Prompt for an edge's real length, pin it, re-solve, and redraw.
+function editEdgeLength(i: number): void {
+  const scale = currentScale();
+  const unit = PRESETS[state.system].label;
+  const current = edgeRealLength(state.points, i, scale);
+  const ans = prompt(
+    `Length of this side (${unit}). Other unlabeled sides will scale to keep the shape closed.`,
+    current.toFixed(2)
+  );
+  if (ans === null) return;
+  const val = parseFloat(ans);
+  if (!(val > 0)) return;
+
+  const fixed = new Map(state.fixedLen);
+  fixed.set(i, val);
+  const solved = resolvePolygon(state.points, fixed, scale);
+  if (!solved) {
+    stageHint.textContent =
+      "Those lengths can't close the shape — unpin a side or adjust the value.";
+    return;
+  }
+  state.points = solved;
+  state.fixedLen = fixed;
+  state.result = null; // geometry changed; previous layout is stale
+  $("#results").hidden = true;
+  draw();
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +463,62 @@ function drawPolygon() {
       ctx.stroke();
     }
   }
+
+  if (state.closed) drawDimensions();
+}
+
+// Draw each edge's real length as a label; pinned edges are highlighted. The
+// hovered edge is underlined to signal it's clickable.
+function drawDimensions() {
+  const pts = state.points;
+  const scale = currentScale();
+  const unit = PRESETS[state.system].label;
+  const hovered = state.hoverPt ? edgeNear(state.hoverPt) : -1;
+
+  ctx.font = "600 12px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const edges = edgesOf(pts);
+  for (let i = 0; i < pts.length; i++) {
+    const mid = edgeMidpoint(pts, i);
+    const len = edgeRealLength(pts, i, scale);
+    const pinned = state.fixedLen.has(i);
+    const label = `${len.toFixed(len < 10 ? 1 : 0)} ${unit}`;
+
+    // Offset the label just outside the edge so it doesn't sit on the line.
+    const e = edges[i];
+    const off = 14;
+    const lx = mid.x + (e.axis === "v" ? off : 0);
+    const ly = mid.y + (e.axis === "h" ? -off : 0);
+
+    const w = ctx.measureText(label).width;
+    ctx.fillStyle = pinned ? getVar("--pin-bg") : getVar("--dim-bg");
+    roundRect(lx - w / 2 - 6, ly - 9, w + 12, 18, 5);
+    ctx.fill();
+
+    ctx.fillStyle = pinned ? getVar("--pin-text") : getVar("--dim-text");
+    ctx.fillText(label, lx, ly);
+
+    if (i === hovered) {
+      ctx.strokeStyle = getVar("--accent");
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(lx - w / 2 - 6, ly + 10);
+      ctx.lineTo(lx + w / 2 + 6, ly + 10);
+      ctx.stroke();
+    }
+  }
+}
+
+function roundRect(x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 function drawCalibration() {
@@ -460,7 +604,8 @@ function updateStageHint() {
   } else if (!state.closed) {
     stageHint.textContent = "Keep clicking corners; click the first point to close.";
   } else if (!state.result) {
-    stageHint.textContent = "Shape closed. Press “Calculate layout”.";
+    stageHint.textContent =
+      "Click a side to set its real length, then press “Calculate layout”.";
   } else {
     stageHint.textContent = "";
   }

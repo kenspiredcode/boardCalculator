@@ -12,6 +12,9 @@ whole vs. cut boards and total waste.
 - **Two input modes**
   - **Draw** — click corners on a grid; edges snap to be axis-aligned
     (rectilinear), and the shape closes when you click the first corner again.
+    Once closed, **click any side to type its real length** — the shape squares
+    up and unlabeled sides scale proportionally to keep the loop closed, so you
+    can sketch roughly and then dial in exact per-side dimensions.
   - **Upload image** — drop in a floorplan photo, calibrate the scale by drawing
     a line of known length, then trace the outline on top.
 - **Imperial or metric** — 4×8 ft or 1220×2440 mm sheets by default, both the
