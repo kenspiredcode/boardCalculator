@@ -1,0 +1,65 @@
+# OSB Sheet Calculator
+
+A single-page web app for figuring out how many standard OSB sheets you need to
+cover an area in a **running-bond (brick) layout** with staggered joints.
+
+Draw a floorplan on a grid, or upload an image of one and set its scale, assign
+real-world dimensions, then get an optimal sheet layout with a full count of
+whole vs. cut boards and total waste.
+
+## Features
+
+- **Two input modes**
+  - **Draw** — click corners on a grid; edges snap to be axis-aligned
+    (rectilinear), and the shape closes when you click the first corner again.
+  - **Upload image** — drop in a floorplan photo, calibrate the scale by drawing
+    a line of known length, then trace the outline on top.
+- **Imperial or metric** — 4×8 ft or 1220×2440 mm sheets by default, both the
+  sheet size and units are editable.
+- **Running-bond packing engine** — lays staggered rows of sheets (½, ⅓, or no
+  offset), tries both sheet orientations, and keeps whichever uses fewer boards.
+- **Honest counts** — whole sheets, cut sheets, total area, and waste percentage.
+- **Handles L-shapes and other concave rectilinear rooms** via polygon
+  triangulation and per-sheet clipping, so the covered area is exact.
+
+## Running locally
+
+```bash
+npm install
+npm run dev
+```
+
+Then open the printed local URL.
+
+## Building
+
+```bash
+npm run build
+```
+
+The static site is emitted to `dist/`. The Vite `base` is set to `./` (relative),
+so the build works served from a subpath (a GitHub Pages project site) or the
+domain root.
+
+## Deploying to GitHub Pages
+
+A workflow at `.github/workflows/deploy.yml` builds and deploys on every push to
+`main`. To enable it once the repo is on GitHub:
+
+1. Push the repo to GitHub.
+2. In the repo, go to **Settings → Pages** and set **Source** to
+   **GitHub Actions**.
+3. Push to `main` (or run the workflow manually). The site publishes to
+   `https://<user>.github.io/<repo>/`.
+
+## How the packing works
+
+The region is a rectilinear polygon in real-world units. The packer:
+
+1. Triangulates the polygon (ear clipping) into convex pieces.
+2. Lays rows of sheet-height across the bounding box, offsetting each row's
+   start by the chosen stagger for the brick pattern.
+3. Clips every candidate sheet against the region. Sheets fully outside are
+   dropped; partial sheets count as one board used and are marked as cut.
+4. Reports board counts and waste, choosing the orientation that needs fewer
+   boards (ties broken by lower waste).

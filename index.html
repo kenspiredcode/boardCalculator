@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSB Sheet Calculator</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <h1>OSB Sheet Calculator</h1>
+        <p class="tagline">
+          Draw or trace an area, set its real dimensions, and get an optimal
+          running-bond sheet layout.
+        </p>
+      </header>
+
+      <div class="layout">
+        <aside class="panel">
+          <section class="card">
+            <h2>1 · Input mode</h2>
+            <div class="segmented" id="mode-seg">
+              <button data-mode="draw" class="active">Draw shape</button>
+              <button data-mode="image">Upload image</button>
+            </div>
+            <label class="field" id="image-field" hidden>
+              <span>Floorplan image</span>
+              <input type="file" id="image-input" accept="image/*" />
+            </label>
+            <p class="hint" id="mode-hint">
+              Click on the grid to place corners. Click the first point again to
+              close the shape.
+            </p>
+          </section>
+
+          <section class="card">
+            <h2>2 · Units &amp; scale</h2>
+            <div class="segmented" id="unit-seg">
+              <button data-system="imperial" class="active">Imperial (ft)</button>
+              <button data-system="metric">Metric (mm)</button>
+            </div>
+            <label class="field">
+              <span id="scale-label">Grid cell = </span>
+              <input type="number" id="scale-input" value="1" min="0.01" step="any" />
+              <span class="unit" id="scale-unit">ft</span>
+            </label>
+            <div id="calibrate-box" hidden>
+              <button class="btn ghost" id="calibrate-btn">
+                Set scale by drawing a known line
+              </button>
+              <p class="hint" id="calibrate-hint"></p>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>3 · OSB sheet</h2>
+            <div class="row">
+              <label class="field">
+                <span>Width</span>
+                <input type="number" id="sheet-w" step="any" />
+              </label>
+              <label class="field">
+                <span>Height</span>
+                <input type="number" id="sheet-h" step="any" />
+              </label>
+            </div>
+            <label class="field">
+              <span>Joint stagger (brick offset)</span>
+              <select id="stagger">
+                <option value="half">½ sheet (running bond)</option>
+                <option value="third">⅓ sheet</option>
+                <option value="none">None (stack bond)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Expansion gap between sheets</span>
+              <input type="number" id="gap" value="0" min="0" step="any" />
+              <span class="unit gap-unit">ft</span>
+            </label>
+          </section>
+
+          <section class="card">
+            <div class="row">
+              <button class="btn" id="calc-btn">Calculate layout</button>
+              <button class="btn ghost" id="clear-btn">Clear shape</button>
+            </div>
+          </section>
+
+          <section class="card results" id="results" hidden>
+            <h2>Result</h2>
+            <div class="stat big"><span id="boards-used">–</span><em>boards needed</em></div>
+            <div class="stat-grid">
+              <div class="stat"><span id="whole-boards">–</span><em>whole sheets</em></div>
+              <div class="stat"><span id="cut-boards">–</span><em>cut sheets</em></div>
+              <div class="stat"><span id="area-covered">–</span><em>area</em></div>
+              <div class="stat"><span id="waste-pct">–</span><em>waste</em></div>
+            </div>
+            <p class="hint" id="orient-note"></p>
+          </section>
+        </aside>
+
+        <main class="stage">
+          <canvas id="canvas"></canvas>
+          <div class="stage-hint" id="stage-hint"></div>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
