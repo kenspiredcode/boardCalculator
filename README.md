@@ -35,6 +35,11 @@ whole vs. cut boards and total waste.
 - **Rectilinear shapes** — any outline of horizontal/vertical edges works
   (rectangle, L, T, U, staircase). Drawing snaps edges to axis-aligned; diagonal
   and curved walls are not supported.
+- **Zoom & pan** — scroll to zoom (centred on the cursor), space-drag or
+  middle-drag to pan. "Fit to view" frames the shape; "Reset zoom" returns to
+  1:1. The view auto-fits after a dimension edit, so pinning a large side keeps
+  the shape on screen. Zoom is a view transform only — measurements and the
+  layout are unaffected.
 - **Honest counts** — boards to buy (after reuse), whole sheets, cut sheets,
   total area, and waste percentage.
 - **Handles L-shapes and other concave rectilinear rooms** via polygon
