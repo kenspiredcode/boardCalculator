@@ -10,6 +10,7 @@ import {
   edgeRealLength,
   edgeMidpoint,
   edgesOf,
+  dragVertex,
 } from "./dimensions";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ interface State {
   panY: number;
   panning: boolean;
   panStart: { x: number; y: number; panX: number; panY: number } | null;
+  draggingVertex: number; // index of vertex being dragged, or -1
 }
 
 const state: State = {
@@ -61,6 +63,7 @@ const state: State = {
   panY: 0,
   panning: false,
   panStart: null,
+  draggingVertex: -1,
 };
 
 // ---------------------------------------------------------------------------
@@ -265,22 +268,53 @@ window.addEventListener("keyup", (e) => {
 
 canvas.addEventListener("mousedown", (e) => {
   const wantPan = e.button === 1 || (e.button === 0 && spaceHeld);
-  if (!wantPan) return;
-  const s = screenPt(e);
-  state.panning = true;
-  dragMoved = false;
-  state.panStart = { x: s.x, y: s.y, panX: state.panX, panY: state.panY };
-  canvas.style.cursor = "grabbing";
-  e.preventDefault();
+  if (wantPan) {
+    const s = screenPt(e);
+    state.panning = true;
+    dragMoved = false;
+    state.panStart = { x: s.x, y: s.y, panX: state.panX, panY: state.panY };
+    canvas.style.cursor = "grabbing";
+    e.preventDefault();
+    return;
+  }
+  // Left-button on a corner of a finished shape starts a vertex drag.
+  if (e.button === 0 && state.closed) {
+    const p = evtPt(e);
+    const vi = vertexNear(p);
+    if (vi !== -1) {
+      state.draggingVertex = vi;
+      dragMoved = false;
+      canvas.style.cursor = "grabbing";
+      e.preventDefault();
+    }
+  }
 });
 window.addEventListener("mousemove", (e) => {
-  if (!state.panning || !state.panStart) return;
-  const s = screenPt(e);
-  if (Math.hypot(s.x - state.panStart.x, s.y - state.panStart.y) > 3)
+  if (state.panning && state.panStart) {
+    const s = screenPt(e);
+    if (Math.hypot(s.x - state.panStart.x, s.y - state.panStart.y) > 3)
+      dragMoved = true;
+    state.panX = state.panStart.panX + (s.x - state.panStart.x);
+    state.panY = state.panStart.panY + (s.y - state.panStart.y);
+    draw();
+    return;
+  }
+  if (state.draggingVertex !== -1) {
     dragMoved = true;
-  state.panX = state.panStart.panX + (s.x - state.panStart.x);
-  state.panY = state.panStart.panY + (s.y - state.panStart.y);
-  draw();
+    let target = evtPt(e);
+    if (e.shiftKey) target = snapToGrid(target); // optional grid snap
+    state.points = dragVertex(
+      state.points,
+      state.draggingVertex,
+      target.x,
+      target.y,
+      state.fixedLen,
+      currentScale()
+    );
+    state.result = null; // geometry changed
+    $("#results").hidden = true;
+    draw();
+  }
 });
 window.addEventListener("mouseup", () => {
   if (state.panning) {
@@ -289,15 +323,25 @@ window.addEventListener("mouseup", () => {
     canvas.style.cursor = spaceHeld ? "grab" : "crosshair";
     draw();
   }
+  if (state.draggingVertex !== -1) {
+    state.draggingVertex = -1;
+    canvas.style.cursor = "crosshair";
+    draw();
+  }
 });
 
 // Canvas interaction
 canvas.addEventListener("mousemove", (e) => {
-  if (state.panning) return; // panning handled on window
+  if (state.panning || state.draggingVertex !== -1) return; // handled on window
   state.hoverPt = evtPt(e);
-  // Pointer cursor when hovering a side of a finished shape (it's editable).
-  canvas.style.cursor =
-    state.closed && edgeNear(state.hoverPt) !== -1 ? "pointer" : "crosshair";
+  // Cursor: grab over a corner (draggable), pointer over a side (editable).
+  if (state.closed && vertexNear(state.hoverPt) !== -1) {
+    canvas.style.cursor = "grab";
+  } else if (state.closed && edgeNear(state.hoverPt) !== -1) {
+    canvas.style.cursor = "pointer";
+  } else {
+    canvas.style.cursor = "crosshair";
+  }
   draw();
 });
 canvas.addEventListener("mouseleave", () => {
@@ -322,6 +366,9 @@ canvas.addEventListener("click", (e) => {
   // Clicking clearly in open space offers to start a fresh shape (confirmed, so
   // a near-miss on a side never silently discards the drawing).
   if (state.closed) {
+    // A press on a corner (that didn't turn into a drag) is a no-op, not an
+    // edge edit or a new-shape trigger.
+    if (vertexNear(p) !== -1) return;
     const edgeIdx = edgeNear(p);
     if (edgeIdx !== -1) {
       editEdgeLength(edgeIdx);
@@ -420,6 +467,30 @@ function gridPxPerUnit(): number {
 // Pixels-per-unit currently in effect (draw grid vs. image calibration).
 function currentScale(): number {
   return state.mode === "draw" ? gridPxPerUnit() : state.pxPerUnit;
+}
+
+// Snap a world point to the nearest grid intersection (draw mode).
+function snapToGrid(p: Pt): Pt {
+  return {
+    x: Math.round(p.x / GRID_PX) * GRID_PX,
+    y: Math.round(p.y / GRID_PX) * GRID_PX,
+  };
+}
+
+const VERTEX_HIT_PX = 11;
+// Index of the vertex within VERTEX_HIT_PX (screen px) of world point p, or -1.
+function vertexNear(p: Pt): number {
+  const tol = VERTEX_HIT_PX / state.zoom;
+  let best = -1;
+  let bestD = tol;
+  for (let i = 0; i < state.points.length; i++) {
+    const d = dist(state.points[i], p);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +630,65 @@ function draw() {
   // Dimension labels are drawn in screen space (after restore) so their text
   // stays a constant size regardless of zoom.
   if (state.closed) drawDimensions();
+  if (state.result) drawSheetTooltip(state.result);
   updateStageHint();
+}
+
+// On hover over a tiled sheet, show its cut-piece dimensions in a tooltip.
+function drawSheetTooltip(r: ReuseResult) {
+  const i = hoveredSheet(r);
+  if (i === -1 || !state.hoverPt) return;
+  const s = r.baseline.placed[i];
+  const unit = PRESETS[state.system].label;
+
+  // Piece size: the covered part's bounding box. usedBox is already in region
+  // (real-world) units, so no scale division. For a whole sheet this equals the
+  // full sheet; for a cut sheet it's the trimmed size.
+  const ub = s.usedBox!;
+  const pw = ub.maxX - ub.minX;
+  const ph = ub.maxY - ub.minY;
+
+  const reused = r.assignments.some(
+    (a) => a.sheetIndex === i && a.servedByOffcut
+  );
+  const kind = s.wholeInside ? "Whole sheet" : reused ? "From offcut" : "Cut sheet";
+  const fmt = (v: number) => (v < 10 ? v.toFixed(1) : v.toFixed(0));
+  const lines = [kind, `${fmt(pw)} × ${fmt(ph)} ${unit}`];
+  if (!s.wholeInside) {
+    const full = r.baseline.options;
+    const fw = full.rotateSheet ? full.sheet.h : full.sheet.w;
+    const fh = full.rotateSheet ? full.sheet.w : full.sheet.h;
+    lines.push(`from ${fmt(fw)} × ${fmt(fh)} board`);
+  }
+
+  // Position near the cursor (screen space).
+  const sp = worldToScreen(state.hoverPt);
+  ctx.font = "12px system-ui, sans-serif";
+  const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const pad = 8;
+  const lh = 16;
+  const boxW = tw + pad * 2;
+  const boxH = lines.length * lh + pad * 2 - 4;
+  let bx = sp.x + 14;
+  let by = sp.y + 14;
+  // Keep the tooltip on-screen.
+  if (bx + boxW > canvas.clientWidth) bx = sp.x - 14 - boxW;
+  if (by + boxH > canvas.clientHeight) by = sp.y - 14 - boxH;
+
+  ctx.fillStyle = getVar("--tip-bg");
+  roundRect(bx, by, boxW, boxH, 6);
+  ctx.fill();
+  ctx.strokeStyle = getVar("--tip-border");
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  lines.forEach((l, k) => {
+    ctx.fillStyle = k === 0 ? getVar("--tip-head") : getVar("--tip-text");
+    ctx.font = k === 0 ? "600 12px system-ui, sans-serif" : "12px system-ui, sans-serif";
+    ctx.fillText(l, bx + pad, by + pad + k * lh);
+  });
 }
 
 // World point -> screen (CSS) point, for screen-space overlays.
@@ -772,7 +901,64 @@ function drawSheets(r: ReuseResult) {
     const { x, y, w, h } = s.rect;
     ctx.strokeRect(x * scale, y * scale, w * scale, h * scale);
   }
+
+  // Pass 3: highlight the sheet under the cursor.
+  const hi = hoveredSheet(r);
+  if (hi !== -1) {
+    const s = r.baseline.placed[hi];
+    ctx.fillStyle = getVar("--hover-fill");
+    for (const frag of s.clip) {
+      ctx.beginPath();
+      ctx.moveTo(frag[0].x * scale, frag[0].y * scale);
+      for (let k = 1; k < frag.length; k++)
+        ctx.lineTo(frag[k].x * scale, frag[k].y * scale);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.strokeStyle = getVar("--accent");
+    ctx.lineWidth = zi(2);
+    for (const frag of s.clip) {
+      ctx.beginPath();
+      ctx.moveTo(frag[0].x * scale, frag[0].y * scale);
+      for (let k = 1; k < frag.length; k++)
+        ctx.lineTo(frag[k].x * scale, frag[k].y * scale);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
   ctx.restore();
+}
+
+// Index of the placed sheet whose covered area is under the current hover point
+// (world px), or -1. Skips while drawing/dragging so it doesn't fight input.
+function hoveredSheet(r: ReuseResult): number {
+  if (!state.hoverPt || state.draggingVertex !== -1) return -1;
+  const scale = currentScale();
+  const hp = state.hoverPt;
+  for (let i = 0; i < r.baseline.placed.length; i++) {
+    for (const frag of r.baseline.placed[i].clip) {
+      // frag coords are in region units; scale to world px to match hoverPt.
+      const poly = frag.map((p) => ({ x: p.x * scale, y: p.y * scale }));
+      if (pointInPolyWorld(hp, poly)) return i;
+    }
+  }
+  return -1;
+}
+
+function pointInPolyWorld(p: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x,
+      yi = poly[i].y,
+      xj = poly[j].x,
+      yj = poly[j].y;
+    if (
+      yi > p.y !== yj > p.y &&
+      p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi
+    )
+      inside = !inside;
+  }
+  return inside;
 }
 
 // Set the canvas clip to the current (closed) region polygon, in canvas pixels.

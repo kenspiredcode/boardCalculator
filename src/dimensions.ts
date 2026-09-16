@@ -175,3 +175,119 @@ export function edgeMidpoint(points: Pt[], i: number): Pt {
   const b = points[(i + 1) % points.length];
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
+
+// ---------------------------------------------------------------------------
+// Vertex dragging with rigid pinned edges
+// ---------------------------------------------------------------------------
+
+// Simple union-find over vertex indices.
+class DSU {
+  parent: number[];
+  constructor(n: number) {
+    this.parent = Array.from({ length: n }, (_, i) => i);
+  }
+  find(x: number): number {
+    while (this.parent[x] !== x) {
+      this.parent[x] = this.parent[this.parent[x]];
+      x = this.parent[x];
+    }
+    return x;
+  }
+  union(a: number, b: number): void {
+    this.parent[this.find(a)] = this.find(b);
+  }
+}
+
+/**
+ * Drag vertex `v` toward (targetX, targetY), keeping the shape rectilinear and
+ * every pinned edge rigid (its length unchanged). Returns new vertex positions.
+ *
+ * Model: along X, vertical edges force their endpoints to share an x-coordinate
+ * (an "x-class"); a pinned horizontal edge rigidly fixes the distance between
+ * two x-classes, merging them into a rigid x-group that can only translate
+ * together. Dragging v moves v's rigid x-group by the requested dx; unpinned
+ * horizontal edges flex to absorb it. Y is symmetric (horizontal edges bind y,
+ * pinned vertical edges make rigid y-groups). The two axes are independent.
+ */
+export function dragVertex(
+  points: Pt[],
+  v: number,
+  targetX: number,
+  targetY: number,
+  fixedLen: Map<number, number>,
+  pxPerUnit: number
+): Pt[] {
+  const n = points.length;
+  const edges = edgesOf(points);
+
+  const nx = solveAxis(
+    points.map((p) => p.x),
+    edges,
+    "v", // vertical edges bind x
+    "h", // pinned horizontal edges are rigid along x
+    v,
+    targetX,
+    fixedLen,
+    pxPerUnit,
+    n
+  );
+  const ny = solveAxis(
+    points.map((p) => p.y),
+    edges,
+    "h", // horizontal edges bind y
+    "v", // pinned vertical edges are rigid along y
+    v,
+    targetY,
+    fixedLen,
+    pxPerUnit,
+    n
+  );
+
+  return points.map((_, i) => ({ x: nx[i], y: ny[i] }));
+}
+
+function solveAxis(
+  coord: number[], // current coordinate (x or y) per vertex
+  edges: Edge[],
+  bindAxis: "h" | "v", // edges of this axis force equal coordinate
+  rigidAxis: "h" | "v", // pinned edges of this axis are rigid distances
+  v: number,
+  target: number,
+  fixedLen: Map<number, number>,
+  pxPerUnit: number,
+  n: number
+): number[] {
+  // 1. Classes: vertices joined by bindAxis edges share this coordinate.
+  const cls = new DSU(n);
+  for (const e of edges) {
+    if (e.axis === bindAxis) cls.union(e.index, (e.index + 1) % n);
+  }
+
+  // 2. Rigid groups: pinned rigidAxis edges rigidly link two classes; merge
+  //    their classes into a rigid group that can only translate together.
+  const grp = new DSU(n);
+  // seed grp with the class structure
+  for (let i = 0; i < n; i++) grp.union(i, cls.find(i));
+  for (const e of edges) {
+    if (e.axis === rigidAxis && fixedLen.has(e.index)) {
+      grp.union(cls.find(e.index), cls.find((e.index + 1) % n));
+    }
+  }
+
+  // 3. Desired shift for the dragged vertex's rigid group.
+  const dv = target - coord[v];
+  const draggedGroup = grp.find(v);
+
+  // 4. Apply: every vertex in the dragged rigid group shifts by dv. Other
+  //    vertices stay. Unpinned edges of rigidAxis flex to absorb the change;
+  //    pinned edges within the moved group keep their length automatically
+  //    (whole group moved together). Pinned edges bridging the moved group and
+  //    a stationary group would stretch — but such an edge would have been
+  //    merged into the same group in step 2, so this can't happen.
+  const out = coord.slice();
+  for (let i = 0; i < n; i++) {
+    if (grp.find(i) === draggedGroup) out[i] += dv;
+  }
+  void pxPerUnit;
+  return out;
+}

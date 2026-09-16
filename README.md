@@ -14,7 +14,10 @@ whole vs. cut boards and total waste.
     (rectilinear), and the shape closes when you click the first corner again.
     Once closed, **click any side to type its real length** — the shape squares
     up and unlabeled sides scale proportionally to keep the loop closed, so you
-    can sketch roughly and then dial in exact per-side dimensions.
+    can sketch roughly and then dial in exact per-side dimensions. You can also
+    **drag any corner** to reshape the outline; sides with a pinned length stay
+    rigid, flexible sides absorb the change, and the shape stays rectilinear
+    (hold Shift to snap to the grid).
   - **Upload image** — drop in a floorplan photo, calibrate the scale by drawing
     a line of known length, then trace the outline on top.
 - **Imperial or metric** — 4×8 ft or 1220×2440 mm sheets by default, both the
@@ -41,7 +44,8 @@ whole vs. cut boards and total waste.
   the shape on screen. Zoom is a view transform only — measurements and the
   layout are unaffected.
 - **Honest counts** — boards to buy (after reuse), whole sheets, cut sheets,
-  total area, and waste percentage.
+  total area, and waste percentage. Hover any tiled sheet to see that piece's
+  dimensions, whether it's whole/cut/from an offcut, and the board it came from.
 - **Handles L-shapes and other concave rectilinear rooms** via polygon
   triangulation and per-sheet clipping, so the covered area is exact.
 

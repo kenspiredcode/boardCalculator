@@ -17,6 +17,11 @@
   --dim-text: #cfd6e2;
   --pin-bg: #4f9dff;
   --pin-text: #ffffff;
+  --hover-fill: rgba(255, 255, 255, 0.14);
+  --tip-bg: rgba(16, 19, 26, 0.96);
+  --tip-border: rgba(255, 255, 255, 0.16);
+  --tip-head: #ffffff;
+  --tip-text: #aeb6c4;
   --sheet-line: rgba(255, 255, 255, 0.28);
   --radius: 10px;
   color-scheme: dark;
