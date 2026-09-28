@@ -23,6 +23,7 @@
   --tip-head: #ffffff;
   --tip-text: #aeb6c4;
   --sheet-line: rgba(255, 255, 255, 0.28);
+  --wall: #ff7a59;
   --radius: 10px;
   color-scheme: dark;
 }
@@ -77,6 +78,9 @@ body {
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; font-size: 13px; }
 .field span:first-child { color: var(--muted); }
 .field.inline { flex-direction: row; align-items: center; }
+.field.check { gap: 8px; cursor: pointer; }
+.field.check input { width: auto; }
+.field.check span:first-child { color: var(--text); }
 input, select {
   background: var(--bg); border: 1px solid var(--border); color: var(--text);
   border-radius: 7px; padding: 8px 10px; font-size: 14px; width: 100%;

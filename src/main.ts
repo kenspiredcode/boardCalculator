@@ -3,8 +3,10 @@ import type { Pt } from "./geometry";
 import type { Stagger } from "./packer";
 import { optimalWithReuse } from "./offcut";
 import type { ReuseResult } from "./offcut";
-import { PRESETS, formatArea } from "./units";
+import { PRESETS, formatArea, formatLength } from "./units";
 import type { System } from "./units";
+import { frameWalls } from "./framing";
+import type { Wall, FramingResult } from "./framing";
 import {
   resolvePolygon,
   edgeRealLength,
@@ -18,9 +20,11 @@ import {
 // ---------------------------------------------------------------------------
 
 type Mode = "draw" | "image";
+type Layer = "floorplan" | "walls";
 type CalibState = "idle" | "picking";
 
 interface State {
+  layer: Layer;
   mode: Mode;
   system: System;
   points: Pt[]; // polygon vertices in *canvas* pixels
@@ -44,9 +48,15 @@ interface State {
   panning: boolean;
   panStart: { x: number; y: number; panX: number; panY: number } | null;
   draggingVertex: number; // index of vertex being dragged, or -1
+  // Standalone wall lines (walls layer). Each is a finished segment.
+  walls: Wall[];
+  // First endpoint of the wall currently being drawn, or null between walls.
+  wallStart: Pt | null;
+  framing: FramingResult | null;
 }
 
 const state: State = {
+  layer: "floorplan",
   mode: "draw",
   system: "imperial",
   points: [],
@@ -64,6 +74,9 @@ const state: State = {
   panning: false,
   panStart: null,
   draggingVertex: -1,
+  walls: [],
+  wallStart: null,
+  framing: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -82,6 +95,11 @@ const sheetH = $("#sheet-h") as HTMLInputElement;
 const scaleInput = $("#scale-input") as HTMLInputElement;
 const gapInput = $("#gap") as HTMLInputElement;
 const staggerSel = $("#stagger") as HTMLSelectElement;
+const studSpacingInput = $("#stud-spacing") as HTMLInputElement;
+const plateLengthInput = $("#plate-length") as HTMLInputElement;
+const bufferToggle = $("#buffer-toggle") as HTMLInputElement;
+
+const BUFFER_PCT = 0.1; // 10% recommended waste buffer
 
 const SNAP_CLOSE_PX = 12;
 // Hit tolerances are screen-pixel intents; convert to world units at the
@@ -105,6 +123,15 @@ function applySystem(sys: System) {
   $("#scale-unit").textContent = preset.label;
   document.querySelectorAll(".gap-unit").forEach((e) => (e.textContent = preset.label));
   scaleInput.value = sys === "imperial" ? "1" : "500";
+  // Framing defaults per system: 16" O.C. / 8 ft plate, or 400 mm / 2440 mm.
+  if (sys === "imperial") {
+    studSpacingInput.value = "1.333"; // 16 inches, in feet
+    plateLengthInput.value = "8";
+  } else {
+    studSpacingInput.value = "400";
+    plateLengthInput.value = "2440";
+  }
+  document.querySelectorAll(".framing-unit").forEach((e) => (e.textContent = preset.label));
   document.querySelectorAll("#unit-seg button").forEach((b) => {
     b.classList.toggle("active", (b as HTMLElement).dataset.system === sys);
   });
@@ -143,6 +170,37 @@ document.querySelectorAll("#mode-seg button").forEach((btn) => {
   });
 });
 
+// Layer toggle (floorplan vs. standalone walls)
+document.querySelectorAll("#layer-seg button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const layer = (btn as HTMLElement).dataset.layer as Layer;
+    state.layer = layer;
+    document.querySelectorAll("#layer-seg button").forEach((b) =>
+      b.classList.toggle("active", b === btn)
+    );
+    applyLayer(layer);
+    draw();
+  });
+});
+
+// Show/hide the controls that belong to each layer. Units & scale stays visible
+// for both, since walls need a scale too.
+function applyLayer(layer: Layer) {
+  const walls = layer === "walls";
+  $("#floorplan-controls").hidden = walls;
+  $("#osb-controls").hidden = walls;
+  $("#floorplan-actions").hidden = walls;
+  $("#results").hidden = walls || !state.result;
+  $("#framing-controls").hidden = !walls;
+  $("#walls-actions").hidden = !walls;
+  $("#framing-results").hidden = !walls || !state.framing;
+  $("#layer-hint").textContent = walls
+    ? "Click to drop a wall's start, click again for its end. Each pair is one standalone wall."
+    : "Floorplan: draw or trace the area to sheathe. Walls: draw standalone wall lines to frame with 2×4s.";
+  // Abandon any half-drawn wall when leaving the walls layer.
+  if (!walls) state.wallStart = null;
+}
+
 // Unit toggle
 document.querySelectorAll("#unit-seg button").forEach((btn) => {
   btn.addEventListener("click", () =>
@@ -180,6 +238,19 @@ $("#clear-btn").addEventListener("click", () => {
   draw();
 });
 $("#calc-btn").addEventListener("click", calculate);
+$("#frame-btn").addEventListener("click", calculateFraming);
+bufferToggle.addEventListener("change", () => {
+  // Re-run only if framing has already been calculated, so the toggle updates
+  // the shown total immediately.
+  if (state.framing) calculateFraming();
+});
+$("#clear-walls-btn").addEventListener("click", () => {
+  state.walls = [];
+  state.wallStart = null;
+  state.framing = null;
+  $("#framing-results").hidden = true;
+  draw();
+});
 
 function resetView() {
   state.zoom = 1;
@@ -277,8 +348,9 @@ canvas.addEventListener("mousedown", (e) => {
     e.preventDefault();
     return;
   }
-  // Left-button on a corner of a finished shape starts a vertex drag.
-  if (e.button === 0 && state.closed) {
+  // Left-button on a corner of a finished shape starts a vertex drag
+  // (floorplan layer only; in walls layer the floorplan is a static backdrop).
+  if (e.button === 0 && state.closed && state.layer === "floorplan") {
     const p = evtPt(e);
     const vi = vertexNear(p);
     if (vi !== -1) {
@@ -335,7 +407,10 @@ canvas.addEventListener("mousemove", (e) => {
   if (state.panning || state.draggingVertex !== -1) return; // handled on window
   state.hoverPt = evtPt(e);
   // Cursor: grab over a corner (draggable), pointer over a side (editable).
-  if (state.closed && vertexNear(state.hoverPt) !== -1) {
+  if (state.layer === "walls") {
+    const overBadge = wallBadgeAt(worldToScreen(state.hoverPt)) !== -1;
+    canvas.style.cursor = overBadge ? "pointer" : "crosshair";
+  } else if (state.closed && vertexNear(state.hoverPt) !== -1) {
     canvas.style.cursor = "grab";
   } else if (state.closed && edgeNear(state.hoverPt) !== -1) {
     canvas.style.cursor = "pointer";
@@ -356,6 +431,42 @@ canvas.addEventListener("click", (e) => {
     return;
   }
   const p = evtPt(e);
+  // Walls layer: build standalone segments, two clicks each.
+  if (state.layer === "walls") {
+    // A click on a wall's delete badge removes that wall (only when not
+    // mid-draw, so the badge can't hijack placing a second endpoint).
+    if (state.wallStart === null) {
+      const del = wallBadgeAt(worldToScreen(p));
+      if (del !== -1) {
+        state.walls.splice(del, 1);
+        // Recompute framing if a result was already showing, so the count
+        // stays in sync; otherwise just drop the stale result.
+        if (state.framing) {
+          if (state.walls.length > 0) calculateFraming();
+          else {
+            state.framing = null;
+            $("#framing-results").hidden = true;
+          }
+        }
+        draw();
+        return;
+      }
+    }
+    const snapped = wallSnap(p);
+    if (state.wallStart === null) {
+      state.wallStart = snapped;
+    } else {
+      // Ignore a zero-length wall (double-click on the same spot).
+      if (dist(state.wallStart, snapped) > 1e-3) {
+        state.walls.push({ a: state.wallStart, b: snapped });
+        state.framing = null; // walls changed; previous count is stale
+        $("#framing-results").hidden = true;
+      }
+      state.wallStart = null;
+    }
+    draw();
+    return;
+  }
   if (state.calib === "picking") {
     state.calibPts.push(p);
     if (state.calibPts.length === 2) finishCalibration();
@@ -441,13 +552,116 @@ function dist(a: Pt, b: Pt): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-// Snap a new vertex to be axis-aligned with the previous one (rectilinear).
+// Snap the direction from `anchor` to `p` onto the nearest 45° multiple
+// (horizontal, vertical, or diagonal), keeping the same reach along that ray.
+function angleSnap(anchor: Pt, p: Pt): Pt {
+  const dx = p.x - anchor.x;
+  const dy = p.y - anchor.y;
+  const r = Math.hypot(dx, dy);
+  if (r < 1e-6) return { x: p.x, y: p.y };
+  const step = Math.PI / 4; // 45°
+  const ang = Math.round(Math.atan2(dy, dx) / step) * step;
+  return { x: anchor.x + r * Math.cos(ang), y: anchor.y + r * Math.sin(ang) };
+}
+
+// Alignment snap: if p's x (or y) is within a small screen margin of an existing
+// point's x (or y), pin it to that coordinate so new points line up with drawn
+// ones. Considers floorplan vertices and wall endpoints; `skip` is excluded
+// (e.g. the anchor the segment is drawn from). Independent per axis.
+const ALIGN_PX = 8;
+function alignSnap(p: Pt, skip?: Pt, axes: "both" | "x" | "y" = "both"): Pt {
+  const tol = ALIGN_PX / state.zoom;
+  const refs: Pt[] = [...state.points];
+  for (const w of state.walls) refs.push(w.a, w.b);
+  let x = p.x;
+  let y = p.y;
+  let bestDX = tol;
+  let bestDY = tol;
+  for (const r of refs) {
+    if (r === skip) continue;
+    if (axes !== "y") {
+      const ax = Math.abs(r.x - p.x);
+      if (ax < bestDX) {
+        bestDX = ax;
+        x = r.x;
+      }
+    }
+    if (axes !== "x") {
+      const ay = Math.abs(r.y - p.y);
+      if (ay < bestDY) {
+        bestDY = ay;
+        y = r.y;
+      }
+    }
+  }
+  return { x, y };
+}
+
+// Snap a new floorplan vertex. The floorplan stays strictly rectilinear (every
+// edge horizontal or vertical) because per-side length editing and the OSB
+// packer both depend on that; 45° is a walls-only affordance. We still nudge
+// onto alignment with existing points.
 function snapAxis(p: Pt): Pt {
-  if (state.points.length === 0) return p;
+  if (state.points.length === 0) return alignSnap(p);
   const prev = state.points[state.points.length - 1];
+  // Axis-align to the previous corner (horizontal or vertical only), then align
+  // only along the free axis so the edge stays axis-aligned.
   const dx = Math.abs(p.x - prev.x);
   const dy = Math.abs(p.y - prev.y);
-  return dx < dy ? { x: prev.x, y: p.y } : { x: p.x, y: prev.y };
+  const vertical = dx < dy;
+  const axial = vertical ? { x: prev.x, y: p.y } : { x: p.x, y: prev.y };
+  return alignSnap(axial, prev, vertical ? "y" : "x");
+}
+
+// Snap a wall endpoint: first to a nearby floorplan corner or wall endpoint (for
+// tracing), then angle-snap to the wall's start point, then align to any point.
+function wallSnap(p: Pt): Pt {
+  // Snap to an existing corner/endpoint within the corner hit tolerance.
+  const tol = VERTEX_HIT_PX / state.zoom;
+  let best: Pt | null = null;
+  let bestD = tol;
+  const snapTargets: Pt[] = [...state.points];
+  for (const w of state.walls) snapTargets.push(w.a, w.b);
+  for (const v of snapTargets) {
+    const d = dist(v, p);
+    if (d < bestD) {
+      bestD = d;
+      best = v;
+    }
+  }
+  if (best) return { x: best.x, y: best.y };
+  if (state.wallStart) {
+    return alignSnap(angleSnap(state.wallStart, p), state.wallStart);
+  }
+  // First endpoint: no anchor to angle-snap against, but still align to points.
+  return alignSnap(p);
+}
+
+// Screen-space center of a wall's delete badge (the hover "×"). Sits just off
+// the wall midpoint, on the +normal side, so it doesn't cover the length label.
+const WALL_BADGE_R_PX = 9; // badge radius, screen px
+function wallBadgeCenter(wall: Wall): Pt {
+  const mid = worldToScreen({
+    x: (wall.a.x + wall.b.x) / 2,
+    y: (wall.a.y + wall.b.y) / 2,
+  });
+  const dx = wall.b.x - wall.a.x;
+  const dy = wall.b.y - wall.a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Unit normal (screen space is a uniform scale of world, so direction holds).
+  const nx = -dy / len;
+  const ny = dx / len;
+  const off = 18; // push the badge off the line
+  return { x: mid.x + nx * off, y: mid.y + ny * off };
+}
+
+// Index of the wall whose delete badge is under screen point sp, or -1.
+function wallBadgeAt(sp: Pt): number {
+  for (let i = 0; i < state.walls.length; i++) {
+    const c = wallBadgeCenter(state.walls[i]);
+    if (Math.hypot(sp.x - c.x, sp.y - c.y) <= WALL_BADGE_R_PX + 2) return i;
+  }
+  return -1;
 }
 
 // Convert canvas-pixel polygon to real-world units for the packer.
@@ -577,6 +791,47 @@ function calculate() {
   draw();
 }
 
+function calculateFraming() {
+  if (state.walls.length === 0) {
+    stageHint.textContent = "Draw at least one wall first (click a start, then an end).";
+    return;
+  }
+  const spacing = parseFloat(studSpacingInput.value);
+  const plateLength = parseFloat(plateLengthInput.value);
+  if (!(spacing > 0) || !(plateLength > 0)) {
+    stageHint.textContent = "Enter a positive stud spacing and plate length.";
+    return;
+  }
+  const result = frameWalls(
+    state.walls,
+    { spacing, plateLength, buffer: bufferToggle.checked ? BUFFER_PCT : 0 },
+    currentScale()
+  );
+  state.framing = result;
+  showFraming(result);
+  draw();
+}
+
+function showFraming(r: FramingResult) {
+  $("#framing-results").hidden = false;
+  $("#total-boards").textContent = String(r.totalWithBuffer);
+  $("#total-studs").textContent = String(r.totalStuds);
+  $("#total-plates").textContent = String(r.totalPlateBoards);
+  $("#wall-count").textContent = String(r.perWall.length);
+  $("#wall-length").textContent = formatLength(r.totalWallLength, state.system);
+  const spacing = parseFloat(studSpacingInput.value);
+  const plate = parseFloat(plateLengthInput.value);
+  const bufferNote =
+    r.buffer > 0
+      ? ` Includes a ${Math.round(r.buffer * 100)}% buffer on ${r.totalBoards} ` +
+        `bare board${r.totalBoards === 1 ? "" : "s"}.`
+      : "";
+  $("#framing-note").textContent =
+    `Studs at ${formatLength(spacing, state.system)} on-center; ` +
+    `top and bottom plates from ${formatLength(plate, state.system)} boards. ` +
+    `All pieces are 2×4.${bufferNote}`;
+}
+
 function showResult(r: ReuseResult) {
   $("#results").hidden = false;
   $("#boards-used").textContent = String(r.freshBoards);
@@ -619,18 +874,24 @@ function draw() {
     drawGrid(w, h);
   }
 
-  // Draw packed sheets under the outline.
-  if (state.result) drawSheets(state.result);
+  // Draw packed sheets under the outline (floorplan layer only).
+  if (state.result && state.layer === "floorplan") drawSheets(state.result);
 
   drawPolygon();
   drawCalibration();
+  if (state.layer === "walls") drawWalls();
 
   ctx.restore();
 
   // Dimension labels are drawn in screen space (after restore) so their text
   // stays a constant size regardless of zoom.
-  if (state.closed) drawDimensions();
-  if (state.result) drawSheetTooltip(state.result);
+  if (state.closed && state.layer === "floorplan") drawDimensions();
+  if (!state.closed && state.layer === "floorplan") drawDrawingLabel();
+  if (state.layer === "walls") {
+    drawWallLabels();
+    drawWallBadges();
+  }
+  if (state.result && state.layer === "floorplan") drawSheetTooltip(state.result);
   updateStageHint();
 }
 
@@ -750,6 +1011,9 @@ function drawImageFit(img: HTMLImageElement, w: number, h: number) {
 function drawPolygon() {
   if (state.points.length === 0) return;
   const pts = state.points;
+  // Dim the floorplan when it's just a tracing backdrop for the walls layer.
+  ctx.save();
+  if (state.layer === "walls") ctx.globalAlpha = 0.4;
   ctx.lineWidth = zi(2);
   ctx.strokeStyle = getVar("--accent");
   ctx.fillStyle = getVar("--accent-fill");
@@ -786,7 +1050,129 @@ function drawPolygon() {
       ctx.stroke();
     }
   }
+  ctx.restore();
+}
 
+// Draw finished walls, plus the rubber-band segment for the one in progress.
+function drawWalls() {
+  ctx.strokeStyle = getVar("--wall");
+  ctx.lineCap = "round";
+  ctx.lineWidth = zi(4);
+  for (const wall of state.walls) {
+    ctx.beginPath();
+    ctx.moveTo(wall.a.x, wall.a.y);
+    ctx.lineTo(wall.b.x, wall.b.y);
+    ctx.stroke();
+  }
+  // Endpoints of finished walls.
+  ctx.fillStyle = getVar("--wall");
+  for (const wall of state.walls) {
+    for (const p of [wall.a, wall.b]) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, zi(4), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // In-progress wall: rubber-band from the placed start to the (snapped) hover.
+  if (state.wallStart) {
+    ctx.fillStyle = getVar("--wall");
+    ctx.beginPath();
+    ctx.arc(state.wallStart.x, state.wallStart.y, zi(4), 0, Math.PI * 2);
+    ctx.fill();
+    if (state.hoverPt) {
+      const end = wallSnap(state.hoverPt);
+      ctx.strokeStyle = getVar("--wall");
+      ctx.setLineDash([zi(6), zi(5)]);
+      ctx.lineWidth = zi(3);
+      ctx.beginPath();
+      ctx.moveTo(state.wallStart.x, state.wallStart.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+
+// Length label at the midpoint of each wall (screen space, constant size).
+// Draw a length label at the midpoint of segment a->b, in screen space so the
+// text stays a constant size at any zoom. Shared by walls and the in-progress
+// floorplan edge.
+function drawSegmentLabel(a: Pt, b: Pt) {
+  const scale = currentScale();
+  const unit = PRESETS[state.system].label;
+  const len = dist(a, b) / scale;
+  const text = `${len.toFixed(len < 10 ? 1 : 0)} ${unit}`;
+  const mid = worldToScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  ctx.font = "600 12px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width;
+  ctx.fillStyle = getVar("--dim-bg");
+  roundRect(mid.x - w / 2 - 6, mid.y - 9, w + 12, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = getVar("--dim-text");
+  ctx.fillText(text, mid.x, mid.y);
+}
+
+// Wall under (or nearest to) the current hover point, for showing its delete
+// badge. Considers both the wall line and its badge, so the × stays reachable.
+// Returns -1 while mid-draw (the in-progress wall owns the cursor).
+function hoveredWall(): number {
+  if (!state.hoverPt || state.wallStart !== null) return -1;
+  const sp = worldToScreen(state.hoverPt);
+  const badge = wallBadgeAt(sp);
+  if (badge !== -1) return badge;
+  const tol = EDGE_HIT_PX / state.zoom;
+  let best = -1;
+  let bestD = tol;
+  for (let i = 0; i < state.walls.length; i++) {
+    const d = distToSegment(state.hoverPt, state.walls[i].a, state.walls[i].b);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// Draw the delete "×" badge on the hovered wall (screen space, constant size).
+function drawWallBadges() {
+  const i = hoveredWall();
+  if (i === -1) return;
+  const c = wallBadgeCenter(state.walls[i]);
+  const r = WALL_BADGE_R_PX;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = getVar("--wall");
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = "round";
+  const k = r * 0.42;
+  ctx.beginPath();
+  ctx.moveTo(c.x - k, c.y - k);
+  ctx.lineTo(c.x + k, c.y + k);
+  ctx.moveTo(c.x + k, c.y - k);
+  ctx.lineTo(c.x - k, c.y + k);
+  ctx.stroke();
+}
+
+function drawWallLabels() {
+  for (const wall of state.walls) drawSegmentLabel(wall.a, wall.b);
+  if (state.wallStart && state.hoverPt) {
+    const end = wallSnap(state.hoverPt);
+    if (dist(state.wallStart, end) > 1e-3) drawSegmentLabel(state.wallStart, end);
+  }
+}
+
+// While drawing a floorplan, show the live length of the rubber-band edge from
+// the last placed corner to the (axis-snapped) hover point.
+function drawDrawingLabel() {
+  if (state.calib !== "idle") return; // don't label during scale calibration
+  if (state.points.length === 0 || !state.hoverPt) return;
+  const last = state.points[state.points.length - 1];
+  const end = snapAxis(state.hoverPt);
+  if (dist(last, end) > 1e-3) drawSegmentLabel(last, end);
 }
 
 // Draw each edge's real length as a label; pinned edges are highlighted. The
@@ -973,6 +1359,19 @@ function clipToRegionPath() {
 }
 
 function updateStageHint() {
+  if (state.layer === "walls") {
+    if (state.walls.length === 0 && !state.wallStart) {
+      stageHint.textContent = "Click to place a wall's start point.";
+    } else if (state.wallStart) {
+      stageHint.textContent = "Click to set the wall's end point.";
+    } else if (!state.framing) {
+      stageHint.textContent =
+        "Add more walls, or press “Calculate framing”.";
+    } else {
+      stageHint.textContent = "";
+    }
+    return;
+  }
   if (state.mode === "image" && !state.image) {
     stageHint.textContent = "Upload a floorplan image to begin.";
   } else if (!state.closed && state.points.length === 0) {

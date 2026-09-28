@@ -19,6 +19,18 @@
       <div class="layout">
         <aside class="panel">
           <section class="card">
+            <h2>Layer</h2>
+            <div class="segmented" id="layer-seg">
+              <button data-layer="floorplan" class="active">Floorplan</button>
+              <button data-layer="walls">Walls</button>
+            </div>
+            <p class="hint" id="layer-hint">
+              Floorplan: draw or trace the area to sheathe. Walls: draw
+              standalone wall lines to frame with 2×4s.
+            </p>
+          </section>
+
+          <section class="card" id="floorplan-controls">
             <h2>1 · Input mode</h2>
             <div class="segmented" id="mode-seg">
               <button data-mode="draw" class="active">Draw shape</button>
@@ -53,7 +65,7 @@
             </div>
           </section>
 
-          <section class="card">
+          <section class="card" id="osb-controls">
             <h2>3 · OSB sheet</h2>
             <div class="row">
               <label class="field">
@@ -80,10 +92,40 @@
             </label>
           </section>
 
+          <section class="card" id="framing-controls" hidden>
+            <h2>Wall framing (2×4)</h2>
+            <label class="field">
+              <span>Stud spacing (on-center)</span>
+              <div class="row">
+                <input type="number" id="stud-spacing" step="any" min="0.01" />
+                <span class="unit framing-unit">ft</span>
+              </div>
+            </label>
+            <label class="field">
+              <span>Plate board length</span>
+              <div class="row">
+                <input type="number" id="plate-length" step="any" min="0.01" />
+                <span class="unit framing-unit">ft</span>
+              </div>
+            </label>
+            <label class="field inline check">
+              <input type="checkbox" id="buffer-toggle" checked />
+              <span>Add 10% waste buffer</span>
+            </label>
+            <p class="hint">
+              One stud at each end plus a stud every spacing on-center; a top
+              and bottom plate, each built from plate-length boards.
+            </p>
+          </section>
+
           <section class="card">
-            <div class="row">
+            <div class="row" id="floorplan-actions">
               <button class="btn" id="calc-btn">Calculate layout</button>
               <button class="btn ghost" id="clear-btn">Clear shape</button>
+            </div>
+            <div class="row" id="walls-actions" hidden>
+              <button class="btn" id="frame-btn">Calculate framing</button>
+              <button class="btn ghost" id="clear-walls-btn">Clear walls</button>
             </div>
             <div class="row" style="margin-top: 8px">
               <button class="btn ghost" id="fit-btn">Fit to view</button>
@@ -107,6 +149,18 @@
               <span><i class="sw reuse"></i>from offcut</span>
             </div>
             <p class="hint" id="orient-note"></p>
+          </section>
+
+          <section class="card results" id="framing-results" hidden>
+            <h2>Framing</h2>
+            <div class="stat big"><span id="total-boards">–</span><em>2×4s to buy</em></div>
+            <div class="stat-grid">
+              <div class="stat"><span id="total-studs">–</span><em>studs</em></div>
+              <div class="stat"><span id="total-plates">–</span><em>plate boards</em></div>
+              <div class="stat"><span id="wall-count">–</span><em>walls</em></div>
+              <div class="stat"><span id="wall-length">–</span><em>total length</em></div>
+            </div>
+            <p class="hint" id="framing-note"></p>
           </section>
         </aside>
 
